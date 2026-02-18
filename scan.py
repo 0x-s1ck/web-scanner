@@ -288,32 +288,64 @@ def check_url(url, tag, session):
         )
         real_fp = fingerprint(real)
 
+        # Check for redirect - any redirect should be MISS
+        final_url = real.url.rstrip('/')
+        original_url = url.rstrip('/')
+        if final_url != original_url:
+            return ("MISS", url)
+
         if real_fp["status"] != 200:
             return ("MISS", url)
 
-        # Check if it's a known sensitive file - auto-FOUND if 200
-        url_clean = url.rstrip('/')
-        for sf in SENSITIVE_FILES:
-            if url_clean.endswith(sf.lstrip('/')):
-                return ("FOUND", f"[{tag}] {url}")
-
         body = real_fp.get("body", b"").lower()
-        if any(x in body for x in [b"login", b"signin", b"password", b"access denied", b"forbidden", b"403", b"404", b"not found"]):
+
+        # Check for meta refresh / javascript redirect
+        body_str = body.decode('utf-8', errors='ignore') if isinstance(body, bytes) else body.lower()
+        redirect_patterns = [
+            '<meta http-equiv="refresh"',
+            'window.location',
+            'location.href',
+            'window.location.href',
+            'top.location',
+            'self.location',
+            'window.location.replace',
+            'location.replace',
+            'window.navigate',
+            'top.location.href',
+            '<script>window',
+            'location.pathname',
+            'form method="GET" action=',
+            'url=',
+            'redirect=',
+            'go(\'',
+            'go("',
+            ".location =",
+            "location.href ="
+        ]
+        if any(x in body_str for x in redirect_patterns):
+            return ("MISS", url)
+
+        # Check for login/error keywords
+        if any(x in body for x in [b"login", b"signin", b"password", b"access denied", b"forbidden", b"403", b"404", b"not found", b"rejected", b"blocked", b"suspended", b"banned", b"cloudflare", b"incapsula", b"akamai", b"security check", b"captcha", b"verify", b"too many requests", b"rate limit"]):
             return ("MISS", url)
 
         if real_fp["length"] < 100:
             return ("MISS", url)
 
+        # Fingerprint check for HTML pages
         if "text/html" in real_fp["ctype"]:
             if (real_fp["hash"] == fake_fp["hash"] and
                 abs(real_fp["length"] - fake_fp["length"]) < LEN_TOL):
                 return ("MISS", url)
 
-            body = real_fp["body"].lower()
-            if any(x in body for x in [b"404", b"not found", b"forbidden"]):
+            if any(x in body for x in [b"404", b"not found", b"forbidden", b"rejected", b"blocked", b"suspended", b"banned", b"cloudflare", b"captcha"]):
                 return ("MISS", url)
 
-            return ("FOUND", f"[{tag}] {url}")
+        # Check if it's a known sensitive file - auto-FOUND if 200 (moved AFTER all MISS checks)
+        url_clean = url.rstrip('/')
+        for sf in SENSITIVE_FILES:
+            if url_clean.endswith(sf.lstrip('/')):
+                return ("FOUND", f"[{tag}] {url}")
 
         ctype = real_fp["ctype"]
         if any(t in ctype for t in TEXT_EXTS):
